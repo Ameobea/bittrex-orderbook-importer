@@ -24,29 +24,39 @@ class TectonicDB {
     socket: any;
     private socketSendQueue: SocketQuery[];
     private activeQuery?: SocketQuery;
+    private initialized: boolean;
 
     constructor(port=PORT, address=HOST) {
         this.socket = new net.Socket();
         this.activeQuery = null;
         this.address = address || HOST;
         this.port = port || PORT;
+        this.initialized = false;
         this.init();
     }
 
-    init() {
+    async init() {
         const client = this;
 
         client.socketSendQueue = [];
 
         client.socket.connect(client.port, client.address, () => {
             console.log(`Tectonic client connected to: ${client.address}:${client.port}`);
+            this.initialized = true;
+
+            // process any queued queries
+            if(this.socketSendQueue.length > 0) {
+                console.log('Sending queued message after DB connected...');
+                client.activeQuery = this.socketSendQueue.shift();
+                client.sendSocketMsg(this.activeQuery.message);
+            }
         });
 
         client.socket.on('close', () => {
             console.log('Client closed');
         });
 
-        client.socket.on('data', (data: any) => 
+        client.socket.on('data', (data: any) =>
             this.handleSocketData(data));
 
         client.socket.on('error', (err: any) => {
@@ -130,7 +140,7 @@ class TectonicDB {
     }
 
     async create(dbname: string) {
-        console.log("CREATING");
+        console.log('CREATING');
         return await this.cmd(`CREATE ${dbname}`);
     }
 
@@ -139,14 +149,15 @@ class TectonicDB {
     }
 
     handleSocketData(data: any) {
-        let client = this;
+        const client = this;
 
         const success = data.subarray(0, 8)[0] === 1;
         const len = new Uint32Array(data.subarray(8,9))[0];
         const dataBody : string = String.fromCharCode.apply(null, data.subarray(9, len+12));
         const response : TectonicResponse = {success, data: dataBody};
+        console.log('RESPONSE: ', response);
 
-        if (client.activeQuery){
+        if (client.activeQuery) {
             // execute the stored callback with the result of the query, fulfilling the promise
             client.activeQuery.cb(response);
         }
@@ -170,7 +181,7 @@ class TectonicDB {
     }
 
     cmd(message: string) : Promise<TectonicResponse> {
-        let client = this;
+        const client = this;
         return new Promise((resolve, reject) => {
             const query: SocketQuery = {
                 message,
@@ -178,12 +189,13 @@ class TectonicDB {
                 onError: reject,
             };
 
-            if(!client.activeQuery) {
-                // socket is idle, so just send the message directly and set the cb
+            if(!client.activeQuery || !this.initialized) {
+                // socket is idle or not yet ready, so just send the message directly and set the cb
+                console.log('Pushing into queue: ' + query.message);
                 client.activeQuery = query;
                 client.sendSocketMsg(message);
             } else {
-                console.log("PUSHING " + query.message);
+                console.log('PUSHING ' + query.message);
                 // push message into the queue to be processed after the others
                 client.socketSendQueue.push(query);
             }
